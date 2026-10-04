@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key><string>ru</string>
+    <key>CFBundleLocalizations</key>
+    <array><string>ru</string><string>en</string></array>
+    <key>CFBundleExecutable</key><string>MyNotes</string>
+    <key>CFBundleIdentifier</key><string>com.mynotes.app</string>
+    <key>CFBundleName</key><string>MyNotes</string>
+    <key>CFBundleDisplayName</key><string>MyNotes</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleShortVersionString</key><string>1.0</string>
+    <key>CFBundleVersion</key><string>1</string>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
+    <key>LSMinimumSystemVersion</key><string>14.0</string>
+    <key>LSArchitecturePriority</key>
+    <array><string>arm64</string></array>
+    <key>NSPrincipalClass</key><string>NSApplication</string>
+    <key>NSHighResolutionCapable</key><true/>
+    <key>NSHumanReadableCopyright</key><string>MyNotes — локальные заметки</string>
+
+    <key>UTExportedTypeDeclarations</key>
+    <array>
+        <dict>
+            <key>UTTypeIdentifier</key><string>com.mynotes.archive</string>
+            <key>UTTypeDescription</key><string>Архив заметок MyNotes</string>
+            <key>UTTypeConformsTo</key>
+            <array><string>public.data</string><string>public.content</string></array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array><string>mynotes</string></array>
+                <key>public.mime-type</key><string>application/x-mynotes</string>
+            </dict>
+        </dict>
+    </array>
+
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key><string>Архив заметок MyNotes</string>
+            <key>CFBundleTypeRole</key><string>Editor</string>
+            <key>LSHandlerRank</key><string>Owner</string>
+            <key>LSItemContentTypes</key>
+            <array><string>com.mynotes.archive</string></array>
+            <key>CFBundleTypeExtensions</key>
+            <array><string>mynotes</string></array>
+        </dict>
+    </array>
+</dict>
+</plist>
