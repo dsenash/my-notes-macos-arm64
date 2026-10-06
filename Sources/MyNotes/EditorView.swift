@@ -245,6 +245,46 @@ final class EditorController {
         tv.didChangeText()
     }
 
+    /// Цвет текста: nil возвращает стандартный (адаптивный) цвет.
+    func setTextColor(_ color: NSColor?) {
+        guard let tv, let storage = tv.textStorage else { return }
+        let range = tv.selectedRange()
+        if range.length == 0 {
+            var attrs = tv.typingAttributes
+            if let color {
+                attrs[.foregroundColor] = color
+            } else {
+                attrs.removeValue(forKey: .foregroundColor)
+            }
+            tv.typingAttributes = attrs
+            return
+        }
+        guard tv.shouldChangeText(in: range, replacementString: nil) else { return }
+        storage.beginEditing()
+        if let color {
+            storage.addAttribute(.foregroundColor, value: color, range: range)
+        } else {
+            storage.removeAttribute(.foregroundColor, range: range)
+        }
+        storage.endEditing()
+        tv.didChangeText()
+    }
+
+    func currentTextColor() -> NSColor? {
+        guard let tv else { return nil }
+        let range = tv.selectedRange()
+        if range.length > 0, let storage = tv.textStorage, range.location < storage.length {
+            return storage.attribute(.foregroundColor, at: range.location, effectiveRange: nil) as? NSColor
+        }
+        return tv.typingAttributes[.foregroundColor] as? NSColor
+    }
+
+    func showTextColorPanel() {
+        ColorPanelHelper.shared.present(initial: currentTextColor()) { [weak self] color in
+            self?.setTextColor(color)
+        }
+    }
+
     func toggleUnderline() { toggleAttribute(.underlineStyle, value: NSUnderlineStyle.single.rawValue) }
     func toggleStrikethrough() { toggleAttribute(.strikethroughStyle, value: NSUnderlineStyle.single.rawValue) }
 
@@ -438,6 +478,71 @@ final class EditorController {
     }
 }
 
+// MARK: - Выбор цвета текста
+
+struct TextColorButton: View {
+    let controller: EditorController
+    @State private var showPopover = false
+    @State private var lastColor: Color?
+
+    private let columns = Array(repeating: GridItem(.fixed(24), spacing: 8), count: 5)
+
+    var body: some View {
+        Button {
+            showPopover.toggle()
+        } label: {
+            VStack(spacing: 1) {
+                Text("A").font(.system(size: 13, weight: .bold))
+                RoundedRectangle(cornerRadius: 1)
+                    .fill(lastColor ?? Color.secondary.opacity(0.5))
+                    .frame(width: 14, height: 3)
+            }
+            .frame(width: 26, height: 24)
+        }
+        .buttonStyle(.borderless)
+        .help("Цвет текста")
+        .popover(isPresented: $showPopover, arrowEdge: .bottom) {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Цвет текста").font(.headline)
+                LazyVGrid(columns: columns, spacing: 8) {
+                    ForEach(Palette.presets) { preset in
+                        Button {
+                            apply(preset.color)
+                        } label: {
+                            Circle()
+                                .fill(Color(nsColor: preset.color))
+                                .frame(width: 22, height: 22)
+                                .overlay(Circle().stroke(Color.primary.opacity(0.25), lineWidth: 1))
+                        }
+                        .buttonStyle(.plain)
+                        .help(preset.name)
+                    }
+                }
+                Divider()
+                Button("Другой цвет…") {
+                    showPopover = false
+                    controller.showTextColorPanel()
+                }
+                .buttonStyle(.link)
+                Button("Стандартный цвет") {
+                    lastColor = nil
+                    showPopover = false
+                    controller.setTextColor(nil)
+                }
+                .buttonStyle(.link)
+            }
+            .padding(14)
+            .frame(width: 180)
+        }
+    }
+
+    private func apply(_ color: NSColor) {
+        lastColor = Color(nsColor: color)
+        showPopover = false
+        controller.setTextColor(color)
+    }
+}
+
 // MARK: - Панель форматирования
 
 struct FormatBar: View {
@@ -462,6 +567,7 @@ struct FormatBar: View {
             tool("italic", "Курсив (⌘I)") { c.toggleItalic() }
             tool("underline", "Подчёркнутый (⌘U)") { c.toggleUnderline() }
             tool("strikethrough", "Зачёркнутый (⇧⌘X)") { c.toggleStrikethrough() }
+            TextColorButton(controller: c)
             divider
             tool("list.bullet", "Маркированный список (⇧⌘8)") { c.toggleBullets() }
             tool("checklist", "Список задач (⇧⌘7)") { c.toggleChecklist() }

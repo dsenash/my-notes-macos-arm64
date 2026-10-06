@@ -10,15 +10,17 @@
     <key>CFBundleName</key><string>MyNotes</string>
     <key>CFBundleDisplayName</key><string>MyNotes</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>1.0</string>
-    <key>CFBundleVersion</key><string>1</string>
+    <key>CFBundleShortVersionString</key><string>1.2</string>
+    <key>CFBundleVersion</key><string>3</string>
     <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>LSArchitecturePriority</key>
-    <array><string>arm64</string></array>
+    <array><string>arm64</string><string>x86_64</string></array>
     <key>NSPrincipalClass</key><string>NSApplication</string>
     <key>NSHighResolutionCapable</key><true/>
-    <key>NSHumanReadableCopyright</key><string>MyNotes — локальные заметки</string>
+    <key>NSHumanReadableCopyright</key><string>Dmitry Senashenko Oct 2026</string>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>MyNotes ищет другие копии приложения в локальной сети и обменивается с ними проектами и заметками только после вашего подтверждения.</string>
 
     <key>UTExportedTypeDeclarations</key>
     <array>

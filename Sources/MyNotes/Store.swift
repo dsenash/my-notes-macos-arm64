@@ -49,7 +49,7 @@ final class Store: ObservableObject {
     func reload() {
         attempt {
             let loadedProjects = try db.rows(
-                "SELECT id, parent_id, name, sort, created FROM projects ORDER BY sort, name COLLATE NOCASE"
+                "SELECT id, parent_id, name, sort, created, color, font_style, updated FROM projects ORDER BY sort, name COLLATE NOCASE"
             ) { (r: Row) -> Project? in
                 guard let id = r.text(0).flatMap(UUID.init(uuidString:)) else { return nil }
                 return Project(
@@ -57,7 +57,10 @@ final class Store: ObservableObject {
                     parentID: r.text(1).flatMap(UUID.init(uuidString:)),
                     name: r.text(2) ?? "",
                     sort: Int(r.int(3)),
-                    created: Date(timeIntervalSince1970: r.real(4))
+                    created: Date(timeIntervalSince1970: r.real(4)),
+                    colorHex: r.text(5),
+                    fontStyle: Int(r.int(6)),
+                    updated: Date(timeIntervalSince1970: r.real(7))
                 )
             }
             projects = loadedProjects.compactMap { $0 }
@@ -153,8 +156,9 @@ final class Store: ObservableObject {
     func insertProject(id: UUID = UUID(), name: String, parent: UUID?) throws -> UUID {
         sortCounter += 1
         try db.execute(
-            "INSERT INTO projects (id, parent_id, name, sort, created) VALUES (?, ?, ?, ?, ?)",
-            [.text(id.uuidString), .uuid(parent), .text(name), .int(Int64(sortCounter)), .real(Date().timeIntervalSince1970)]
+            "INSERT INTO projects (id, parent_id, name, sort, created, updated) VALUES (?, ?, ?, ?, ?, ?)",
+            [.text(id.uuidString), .uuid(parent), .text(name), .int(Int64(sortCounter)),
+             .real(Date().timeIntervalSince1970), .real(Date().timeIntervalSince1970)]
         )
         return id
     }
@@ -180,8 +184,45 @@ final class Store: ObservableObject {
 
     func promptRename(project id: UUID) {
         guard let name = Dialogs.prompt(title: "Переименовать проект", defaultValue: projectName(id), ok: "Сохранить") else { return }
-        attempt { try db.execute("UPDATE projects SET name = ? WHERE id = ?", [.text(name), .text(id.uuidString)]) }
+        attempt {
+            try db.execute(
+                "UPDATE projects SET name = ?, updated = ? WHERE id = ?",
+                [.text(name), .real(Date().timeIntervalSince1970), .text(id.uuidString)]
+            )
+        }
         reload()
+    }
+
+    /// Цвет названия проекта (hex вида #RRGGBB, nil — стандартный).
+    /// Обновляет данные в памяти без полной перезагрузки, чтобы выбор в панели цветов не тормозил.
+    func setProjectColor(_ id: UUID, hex: String?) {
+        guard let i = projects.firstIndex(where: { $0.id == id }) else { return }
+        let now = Date()
+        projects[i].colorHex = hex
+        projects[i].updated = now
+        attempt {
+            try db.execute(
+                "UPDATE projects SET color = ?, updated = ? WHERE id = ?",
+                [hex.map { DBValue.text($0) } ?? .null, .real(now.timeIntervalSince1970), .text(id.uuidString)]
+            )
+        }
+    }
+
+    /// Начертание названия проекта. nil оставляет соответствующий признак без изменений.
+    func setProjectFontStyle(_ id: UUID, bold: Bool?, italic: Bool?) {
+        guard let i = projects.firstIndex(where: { $0.id == id }) else { return }
+        var style = projects[i].fontStyle
+        if let bold { style = bold ? (style | 1) : (style & ~1) }
+        if let italic { style = italic ? (style | 2) : (style & ~2) }
+        let now = Date()
+        projects[i].fontStyle = style
+        projects[i].updated = now
+        attempt {
+            try db.execute(
+                "UPDATE projects SET font_style = ?, updated = ? WHERE id = ?",
+                [.int(Int64(style)), .real(now.timeIntervalSince1970), .text(id.uuidString)]
+            )
+        }
     }
 
     func projectName(_ id: UUID) -> String {
@@ -233,7 +274,12 @@ final class Store: ObservableObject {
             if newParent == id || descendants(of: id).contains(newParent) { return false }
         }
         if projects.first(where: { $0.id == id })?.parentID == newParent { return false }
-        attempt { try db.execute("UPDATE projects SET parent_id = ? WHERE id = ?", [.uuid(newParent), .text(id.uuidString)]) }
+        attempt {
+            try db.execute(
+                "UPDATE projects SET parent_id = ?, updated = ? WHERE id = ?",
+                [.uuid(newParent), .real(Date().timeIntervalSince1970), .text(id.uuidString)]
+            )
+        }
         reload()
         return true
     }
@@ -296,7 +342,13 @@ final class Store: ObservableObject {
     }
 
     func moveNote(_ id: UUID, to project: UUID?) {
-        attempt { try db.execute("UPDATE notes SET project_id = ? WHERE id = ?", [.uuid(project), .text(id.uuidString)]) }
+        // Перенос заметки — тоже изменение: обновляем метку, чтобы оно доехало при синхронизации.
+        attempt {
+            try db.execute(
+                "UPDATE notes SET project_id = ?, updated = ? WHERE id = ?",
+                [.uuid(project), .real(Date().timeIntervalSince1970), .text(id.uuidString)]
+            )
+        }
         reload()
         if let project { expanded.insert(project) }
     }

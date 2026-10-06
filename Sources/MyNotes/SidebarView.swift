@@ -36,6 +36,7 @@ struct WindowDragArea: NSViewRepresentable {
 
 struct SidebarView: View {
     @ObservedObject var store: Store
+    @ObservedObject private var theme = Theme.shared
     @FocusState private var searchFocused: Bool
 
     var body: some View {
@@ -95,7 +96,13 @@ struct SidebarView: View {
                 store.handleDrop(items, onto: nil)
             }
         }
-        .background(VisualEffectView(material: .sidebar))
+        .background {
+            if let color = theme.sidebarColor {
+                color
+            } else {
+                VisualEffectView(material: .sidebar)
+            }
+        }
     }
 
     private var header: some View {
@@ -178,6 +185,10 @@ struct ProjectRowView: View {
         store.projects.contains { $0.parentID == project.id } || store.notes.contains { $0.projectID == project.id }
     }
 
+    private var nameColor: Color {
+        project.colorHex.flatMap { NSColor(hex: $0) }.map { Color(nsColor: $0) } ?? Color.primary
+    }
+
     var body: some View {
         HStack(spacing: 4) {
             Image(systemName: "chevron.right")
@@ -191,7 +202,10 @@ struct ProjectRowView: View {
             Image(systemName: isExpanded ? "folder.fill" : "folder")
                 .foregroundStyle(.secondary)
             Text(project.name)
+                .italic(project.isItalic)
+                .fontWeight(project.isBold ? .bold : .regular)
                 .lineLimit(1)
+                .foregroundStyle(nameColor)
             Spacer(minLength: 4)
 
             if hover {
@@ -225,6 +239,40 @@ struct ProjectRowView: View {
             Button("Новый вложенный проект") { store.promptNewProject(parent: project.id) }
             Divider()
             Button("Переименовать…") { store.promptRename(project: project.id) }
+            Menu("Цвет названия") {
+                Button("По умолчанию") { store.setProjectColor(project.id, hex: nil) }
+                Divider()
+                ForEach(Palette.presets) { preset in
+                    Button {
+                        store.setProjectColor(project.id, hex: preset.hex)
+                    } label: {
+                        Label {
+                            Text(preset.name)
+                        } icon: {
+                            Image(nsImage: ColorSwatch.image(preset.color))
+                        }
+                    }
+                }
+                Divider()
+                Button("Другой цвет…") {
+                    let id = project.id
+                    ColorPanelHelper.shared.present(initial: project.colorHex.flatMap { NSColor(hex: $0) }) { color in
+                        store.setProjectColor(id, hex: color.hexString)
+                    }
+                }
+            }
+            Menu("Начертание названия") {
+                Toggle("Жирный", isOn: Binding(
+                    get: { project.isBold },
+                    set: { store.setProjectFontStyle(project.id, bold: $0, italic: nil) }
+                ))
+                Toggle("Курсив", isOn: Binding(
+                    get: { project.isItalic },
+                    set: { store.setProjectFontStyle(project.id, bold: nil, italic: $0) }
+                ))
+                Divider()
+                Button("Обычный") { store.setProjectFontStyle(project.id, bold: false, italic: false) }
+            }
             Menu("Переместить в") {
                 Button("Верхний уровень") { store.moveProject(project.id, to: nil) }
                 let blocked = store.descendants(of: project.id).union([project.id])

@@ -68,6 +68,20 @@ final class Database {
         CREATE INDEX IF NOT EXISTS idx_notes_project ON notes(project_id);
         CREATE INDEX IF NOT EXISTS idx_projects_parent ON projects(parent_id);
         """)
+
+        // Миграция: цвет названия проекта (добавлен в версии 1.1).
+        let columns = try rows("PRAGMA table_info(projects)") { (r: Row) -> String in r.text(1) ?? "" }
+        if !columns.contains("color") {
+            try script("ALTER TABLE projects ADD COLUMN color TEXT;")
+        }
+        // Миграция 1.2: начертание названия и время изменения проекта (нужно для синхронизации).
+        if !columns.contains("font_style") {
+            try script("ALTER TABLE projects ADD COLUMN font_style INTEGER NOT NULL DEFAULT 0;")
+        }
+        if !columns.contains("updated") {
+            try script("ALTER TABLE projects ADD COLUMN updated REAL;")
+        }
+        try script("UPDATE projects SET updated = created WHERE updated IS NULL;")
     }
 
     deinit { sqlite3_close(handle) }

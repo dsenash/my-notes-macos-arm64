@@ -1,9 +1,13 @@
 import AppKit
 import SwiftUI
+import Combine
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private var window: NSWindow?
+    private var settingsWindow: NSWindow?
     private var statusItem: NSStatusItem?
+    private var appearanceObservation: NSKeyValueObservation?
+    private var themeCancellable: AnyCancellable?
     private var pendingURLs: [URL] = []
     private let store = Store.shared
 
@@ -15,7 +19,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         }
         NSApp.mainMenu = buildMenu()
         makeWindow()
+        setupTheme()
         setupStatusItem()
+        SyncService.shared.start()
         showMainWindow()
 
         let urls = pendingURLs
@@ -40,6 +46,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        SyncService.shared.stop()
         EditorController.shared.flushCurrent()
     }
 
@@ -69,6 +76,55 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         window = w
     }
 
+    // MARK: - Тема и настройки
+
+    /// Следит за системной темой и за выбранными цветами, переключая вид главного окна при необходимости.
+    private func setupTheme() {
+        appearanceObservation = NSApp.observe(\.effectiveAppearance, options: [.initial, .new]) { [weak self] app, _ in
+            let isDark = app.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            DispatchQueue.main.async {
+                Theme.shared.systemIsDark = isDark
+                self?.applyThemeAppearance()
+            }
+        }
+        themeCancellable = Theme.shared.objectWillChange.sink { [weak self] _ in
+            // objectWillChange срабатывает до смены значения — читаем уже новое на следующем цикле.
+            DispatchQueue.main.async { self?.applyThemeAppearance() }
+        }
+        applyThemeAppearance()
+    }
+
+    private func applyThemeAppearance() {
+        window?.appearance = Theme.shared.forcedAppearance
+    }
+
+    @objc private func showAbout() {
+        NSApp.orderFrontStandardAboutPanel(options: [
+            .applicationName: "MyNotes",
+            .applicationIcon: GothicN.appIconImage(size: 256),
+            NSApplication.AboutPanelOptionKey(rawValue: "Copyright"): "Dmitry Senashenko Oct 2026"
+        ])
+    }
+
+    @objc private func syncFromLAN() {
+        showMainWindow()
+        SyncClient.shared.start()
+    }
+
+    @objc private func openSettings() {
+        if settingsWindow == nil {
+            let host = NSHostingController(rootView: SettingsView())
+            let w = NSWindow(contentViewController: host)
+            w.styleMask = [.titled, .closable]
+            w.title = "Настройки MyNotes"
+            w.isReleasedWhenClosed = false
+            w.center()
+            settingsWindow = w
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        settingsWindow?.makeKeyAndOrderFront(nil)
+    }
+
     func showMainWindow() {
         NSApp.activate(ignoringOtherApps: true)
         guard let window else { return }
@@ -95,6 +151,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             let menu = NSMenu()
             menu.addItem(item("Открыть MyNotes", #selector(openMainFromTray)))
             menu.addItem(item("Новая заметка", #selector(newNoteFromTray)))
+            menu.addItem(item("Синхронизироваться из локальной сети", #selector(syncFromLAN)))
+            menu.addItem(item("Настройки…", #selector(openSettings)))
             menu.addItem(.separator())
             menu.addItem(std("Выйти из MyNotes", #selector(NSApplication.terminate(_:)), "q"))
             statusItem?.menu = menu
@@ -143,7 +201,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
         // MyNotes
         main.addItem(submenu("MyNotes", [
-            std("О программе MyNotes", #selector(NSApplication.orderFrontStandardAboutPanel(_:))),
+            item("О программе MyNotes", #selector(showAbout)),
+            .separator(),
+            item("Настройки…", #selector(openSettings), ","),
+            item("Синхронизироваться из локальной сети", #selector(syncFromLAN)),
             .separator(),
             item("Показать папку с данными", #selector(revealData)),
             .separator(),
@@ -297,6 +358,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             return store.activeTab != nil
         case #selector(newNestedProject):
             return store.selectedProject != nil
+        case #selector(syncFromLAN):
+            return !SyncClient.shared.isRunning
         case #selector(fmtBold), #selector(fmtItalic), #selector(fmtUnderline), #selector(fmtStrike),
              #selector(fmtTitle), #selector(fmtHeading), #selector(fmtSubheading), #selector(fmtBody),
              #selector(fmtBullets), #selector(fmtChecklist), #selector(fmtAlignLeft), #selector(fmtAlignCenter),

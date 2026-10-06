@@ -46,6 +46,7 @@ struct RootView: View {
 
 struct DetailView: View {
     @ObservedObject var store: Store
+    @ObservedObject private var theme = Theme.shared
 
     var body: some View {
         VStack(spacing: 0) {
@@ -60,7 +61,7 @@ struct DetailView: View {
                 EmptyStateView(store: store)
             }
         }
-        .background(Color(nsColor: .textBackgroundColor))
+        .background(theme.backgroundColor ?? Color(nsColor: .textBackgroundColor))
     }
 }
 

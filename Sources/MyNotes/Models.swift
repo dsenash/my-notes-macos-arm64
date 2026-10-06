@@ -6,6 +6,14 @@ struct Project: Identifiable, Hashable {
     var name: String
     var sort: Int
     var created: Date
+    var colorHex: String? = nil
+    /// Битовая маска начертания названия: 1 — жирный, 2 — курсив.
+    var fontStyle: Int = 0
+    /// Время последнего изменения (для слияния при синхронизации).
+    var updated: Date = Date(timeIntervalSince1970: 0)
+
+    var isBold: Bool { fontStyle & 1 != 0 }
+    var isItalic: Bool { fontStyle & 2 != 0 }
 }
 
 struct NoteMeta: Identifiable, Hashable {
@@ -38,10 +46,11 @@ enum ExportScope {
 
 struct Archive: Codable {
     var format: String = "MyNotes"
-    var version: Int = 1
+    var version: Int = 2
     var exportedAt: Date = Date()
     var projects: [ArchivedProject]
     var notes: [ArchivedNote]
+    var deviceName: String? = nil
 }
 
 struct ArchivedProject: Codable {
@@ -49,6 +58,9 @@ struct ArchivedProject: Codable {
     var parentID: String?
     var name: String
     var sort: Int
+    var color: String? = nil
+    var fontStyle: Int? = nil
+    var updated: Date? = nil
 }
 
 struct ArchivedNote: Codable {

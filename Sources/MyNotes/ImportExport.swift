@@ -48,7 +48,10 @@ extension Store {
                 id: p.id.uuidString,
                 parentID: p.id == rootProject ? nil : p.parentID?.uuidString,
                 name: p.name,
-                sort: p.sort
+                sort: p.sort,
+                color: p.colorHex,
+                fontStyle: p.fontStyle,
+                updated: p.updated
             )
         }
         let archivedNotes = notes.filter { noteIDs.contains($0.id) }.map { n in
@@ -115,6 +118,152 @@ extension Store {
         }
     }
 
+    // MARK: - Слияние изменений (общее для импорта .mynotes и синхронизации по сети)
+    //
+    // Правила (устоявшаяся практика для офлайн-синхронизации без центрального сервера):
+    //  • у каждой записи (проект, заметка) есть идентификатор UUID и время последнего изменения;
+    //  • «побеждает последняя запись» (last-writer-wins) отдельно для каждой записи;
+    //  • изменение применяется только если оно новее локального, поэтому слияние идемпотентно:
+    //    повторная синхронизация тех же данных ничего не меняет;
+    //  • всё применяется одной транзакцией: либо все изменения, либо ни одного;
+    //  • защита от циклов во вложенности проектов (A внутри B, B внутри A);
+    //  • удаления не переносятся: слияние только добавляет и обновляет, чтобы ничего не потерять.
+
+    private struct MergeNode {
+        var parent: String?
+        var updated: Double
+    }
+
+    struct MergeReport {
+        var addedProjects = 0
+        var updatedProjects = 0
+        var addedNotes = 0
+        var updatedNotes = 0
+        var unchangedNotes = 0
+
+        var summary: String {
+            "Новых проектов: \(addedProjects)\nИзменённых проектов: \(updatedProjects)\n"
+                + "Новых заметок: \(addedNotes)\nОбновлённых заметок: \(updatedNotes)\nБез изменений: \(unchangedNotes)"
+        }
+    }
+
+    func decodeArchive(at url: URL) throws -> Archive {
+        let data = try Data(contentsOf: url, options: .mappedIfSafe)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .millisecondsSince1970
+        let archive = try decoder.decode(Archive.self, from: data)
+        guard archive.format == "MyNotes" else { throw DBError(message: "Это не файл MyNotes.") }
+        guard archive.version <= 2 else {
+            throw DBError(message: "Данные созданы более новой версией MyNotes. Обновите приложение.")
+        }
+        return archive
+    }
+
+    private static func createsCycle(_ id: String, newParent: String?, tree: [String: MergeNode]) -> Bool {
+        var cursor = newParent
+        var hops = 0
+        while let current = cursor, hops < 10_000 {
+            if current == id { return true }
+            cursor = tree[current]?.parent
+            hops += 1
+        }
+        return false
+    }
+
+    func mergeArchive(_ archive: Archive) throws -> MergeReport {
+        var report = MergeReport()
+
+        try db.transaction {
+            try db.script("PRAGMA defer_foreign_keys = ON;")
+
+            var tree: [String: MergeNode] = [:]
+            let existing = try db.rows("SELECT id, parent_id, updated FROM projects") { (r: Row) -> (String, String?, Double) in
+                (r.text(0) ?? "", r.text(1), r.real(2))
+            }
+            for row in existing { tree[row.0] = MergeNode(parent: row.1, updated: row.2) }
+            let allProjectIDs = Set(tree.keys).union(archive.projects.map(\.id))
+
+            // 1) Новые проекты. Сначала без родителя, чтобы порядок вставки не имел значения.
+            var inserted = Set<String>()
+            for p in archive.projects where tree[p.id] == nil {
+                let stamp = p.updated?.timeIntervalSince1970 ?? Date().timeIntervalSince1970
+                try db.execute(
+                    "INSERT INTO projects (id, parent_id, name, sort, created, color, font_style, updated) VALUES (?, NULL, ?, ?, ?, ?, ?, ?)",
+                    [.text(p.id), .text(p.name), .int(Int64(p.sort)), .real(Date().timeIntervalSince1970),
+                     p.color.map { DBValue.text($0) } ?? .null, .int(Int64(p.fontStyle ?? 0)), .real(stamp)]
+                )
+                tree[p.id] = MergeNode(parent: nil, updated: stamp)
+                inserted.insert(p.id)
+                report.addedProjects += 1
+            }
+
+            // 2) Изменения существующих проектов и расстановка родителей.
+            for p in archive.projects {
+                guard let node = tree[p.id] else { continue }
+                let isNew = inserted.contains(p.id)
+                let remoteStamp = p.updated?.timeIntervalSince1970 ?? 0
+                guard isNew || remoteStamp > node.updated + 0.0005 else { continue }
+
+                if !isNew {
+                    try db.execute(
+                        "UPDATE projects SET name = ?, sort = ?, color = ?, font_style = ?, updated = ? WHERE id = ?",
+                        [.text(p.name), .int(Int64(p.sort)), p.color.map { DBValue.text($0) } ?? .null,
+                         .int(Int64(p.fontStyle ?? 0)), .real(remoteStamp), .text(p.id)]
+                    )
+                    tree[p.id]?.updated = remoteStamp
+                    report.updatedProjects += 1
+                }
+
+                let desiredParent = p.parentID.flatMap { allProjectIDs.contains($0) ? $0 : nil }
+                if desiredParent != node.parent,
+                   !Store.createsCycle(p.id, newParent: desiredParent, tree: tree) {
+                    try db.execute(
+                        "UPDATE projects SET parent_id = ? WHERE id = ?",
+                        [desiredParent.map { DBValue.text($0) } ?? .null, .text(p.id)]
+                    )
+                    tree[p.id]?.parent = desiredParent
+                }
+            }
+
+            // 3) Заметки: побеждает более поздняя правка.
+            for n in archive.notes {
+                let current = try db.rows("SELECT updated FROM notes WHERE id = ?", [.text(n.id)]) { (r: Row) -> Double in r.real(0) }
+                let projectValue = n.projectID.flatMap { allProjectIDs.contains($0) ? $0 : nil }
+                    .map { DBValue.text($0) } ?? .null
+                let plain = n.body.flatMap(BodyCodec.decode)?.string.replacingOccurrences(of: "\u{FFFC}", with: " ") ?? ""
+                let blob = n.body.map { DBValue.blob($0) } ?? .null
+
+                if let localStamp = current.first {
+                    if n.updated.timeIntervalSince1970 > localStamp + 0.0005 {
+                        try db.execute(
+                            "UPDATE notes SET project_id = ?, title = ?, body = ?, plain = ?, updated = ? WHERE id = ?",
+                            [projectValue, .text(n.title), blob, .text(plain), .real(n.updated.timeIntervalSince1970), .text(n.id)]
+                        )
+                        report.updatedNotes += 1
+                    } else {
+                        report.unchangedNotes += 1
+                    }
+                } else {
+                    try db.execute(
+                        "INSERT INTO notes (id, project_id, title, body, plain, created, updated) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        [.text(n.id), projectValue, .text(n.title), blob, .text(plain),
+                         .real(n.created.timeIntervalSince1970), .real(n.updated.timeIntervalSince1970)]
+                    )
+                    report.addedNotes += 1
+                }
+            }
+        }
+
+        reload()
+        return report
+    }
+
+    /// Применяет пакет, полученный по сети. Возвращает отчёт и имя устройства-источника.
+    func applySyncPackage(at url: URL) throws -> (report: MergeReport, deviceName: String?) {
+        let archive = try decodeArchive(at: url)
+        return (try mergeArchive(archive), archive.deviceName)
+    }
+
     // MARK: - Импорт .mynotes
 
     func importArchiveWithPanel() {
@@ -128,61 +277,10 @@ extension Store {
 
     func importArchive(from url: URL) {
         do {
-            let data = try Data(contentsOf: url)
-            let decoder = JSONDecoder()
-            decoder.dateDecodingStrategy = .millisecondsSince1970
-            let archive = try decoder.decode(Archive.self, from: data)
-            guard archive.format == "MyNotes" else { throw DBError(message: "Это не файл MyNotes.") }
-
-            var addedProjects = 0, addedNotes = 0, updatedNotes = 0, skippedNotes = 0
-            try db.transaction {
-                try db.script("PRAGMA defer_foreign_keys = ON;")
-                var knownProjects = Set(projects.map { $0.id.uuidString })
-
-                for p in archive.projects where !knownProjects.contains(p.id) {
-                    try db.execute(
-                        "INSERT INTO projects (id, parent_id, name, sort, created) VALUES (?, ?, ?, ?, ?)",
-                        [.text(p.id), p.parentID.map { DBValue.text($0) } ?? .null, .text(p.name),
-                         .int(Int64(p.sort)), .real(Date().timeIntervalSince1970)]
-                    )
-                    knownProjects.insert(p.id)
-                    addedProjects += 1
-                }
-                let allProjects = knownProjects.union(archive.projects.map(\.id))
-
-                for n in archive.notes {
-                    let existing = try db.rows("SELECT updated FROM notes WHERE id = ?", [.text(n.id)]) { (r: Row) -> Double in r.real(0) }
-                    let projectID = n.projectID.flatMap { allProjects.contains($0) ? $0 : nil }
-                    let plain = n.body.flatMap(BodyCodec.decode)?.string.replacingOccurrences(of: "\u{FFFC}", with: " ") ?? ""
-                    let blob = n.body.map { DBValue.blob($0) } ?? .null
-                    let projectValue = projectID.map { DBValue.text($0) } ?? .null
-
-                    if let current = existing.first {
-                        if n.updated.timeIntervalSince1970 > current + 0.5 {
-                            try db.execute(
-                                "UPDATE notes SET project_id = ?, title = ?, body = ?, plain = ?, updated = ? WHERE id = ?",
-                                [projectValue, .text(n.title), blob, .text(plain), .real(n.updated.timeIntervalSince1970), .text(n.id)]
-                            )
-                            updatedNotes += 1
-                        } else {
-                            skippedNotes += 1
-                        }
-                    } else {
-                        try db.execute(
-                            "INSERT INTO notes (id, project_id, title, body, plain, created, updated) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                            [.text(n.id), projectValue, .text(n.title), blob, .text(plain),
-                             .real(n.created.timeIntervalSince1970), .real(n.updated.timeIntervalSince1970)]
-                        )
-                        addedNotes += 1
-                    }
-                }
-            }
-            reload()
+            let archive = try decodeArchive(at: url)
+            let report = try mergeArchive(archive)
             NSApp.activate(ignoringOtherApps: true)
-            Dialogs.info(
-                title: "Импорт завершён",
-                message: "Файл: \(url.lastPathComponent)\nДобавлено заметок: \(addedNotes)\nОбновлено: \(updatedNotes)\nПропущено (уже есть и не новее): \(skippedNotes)\nНовых проектов: \(addedProjects)"
-            )
+            Dialogs.info(title: "Импорт завершён", message: "Файл: \(url.lastPathComponent)\n" + report.summary)
         } catch {
             Dialogs.info(title: "Не удалось импортировать «\(url.lastPathComponent)»", message: error.localizedDescription)
         }
